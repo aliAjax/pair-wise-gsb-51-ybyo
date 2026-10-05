@@ -1,4 +1,5 @@
 """业务用例编排、权限检查与审计。"""
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
@@ -52,6 +53,17 @@ class Service:
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
         new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
+        details = {"summary": summary, "input": data or {}, "from": record["state"], "to": new_state}
+        if self.rules.voids_pending_batches(action):
+            return self.repository.mutate_and_void_pending_batches(
+                record_id=record_id,
+                expected_version=int(expected_version),
+                state=new_state,
+                payload=new_payload,
+                actor_id=actor.user_id,
+                action=action,
+                details=details,
+            )
         return self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
@@ -59,7 +71,7 @@ class Service:
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details=details,
         )
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
@@ -67,7 +79,108 @@ class Service:
         self._ensure_known_role(actor)
         return self.audit.timeline(record_id)
 
-    def stats(self, actor: Actor) -> Dict[str, int]:
+    def stats(self, actor: Actor) -> Dict[str, Any]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
-        return self.repository.stats()
+        return {
+            "records": self.repository.stats(),
+            "guarantee": self.repository.guarantee_stats(),
+            "quota_pools": self.repository.list_quota_pools(),
+        }
+
+    def create_quota_pool(self, actor: Actor, payload: Dict[str, Any]) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_administer(actor.role):
+            raise PermissionDenied("仅管理员可维护年度代偿额度")
+        data = self.rules.validate_pool(payload or {})
+        return self.repository.create_quota_pool(int(data["year"]), float(data["total_amount"]), actor.user_id)
+
+    def list_quota_pools(self, actor: Actor) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_quota_pools()
+
+    def create_agency(self, actor: Actor, payload: Dict[str, Any]) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_administer(actor.role):
+            raise PermissionDenied("仅管理员可登记担保机构")
+        data = self.rules.validate_agency(payload or {})
+        return self.repository.create_agency(data["code"], data["name"])
+
+    def list_agencies(self, actor: Actor) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_agencies()
+
+    def submit_compensation(self, actor: Actor, record_id: int, payload: Dict[str, Any]) -> Any:
+        """提交代偿批次并预占额度；同一batch_no重试按原批次返回。返回(批次, 是否新建)。"""
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_submit_batch(actor.role):
+            raise PermissionDenied("角色无权提交代偿批次")
+        record = self.repository.get(record_id)
+        self.rules.check_record_accepts_compensation(record)
+        data = self.rules.validate_batch(payload or {}, datetime.now(timezone.utc).year)
+        agency = self.repository.get_agency_by_code(data["agency_code"])
+        batch, created = self.repository.submit_batch(
+            record_id=record["id"],
+            agency=agency,
+            batch_no=data["batch_no"],
+            year=int(data["year"]),
+            amount=float(data["amount"]),
+            actor_id=actor.user_id,
+        )
+        if created:
+            self.audit.note(record["id"], actor.user_id, "compensation_submitted", {
+                "batch_no": batch["batch_no"],
+                "agency_code": agency["code"],
+                "year": batch["year"],
+                "amount": batch["amount"],
+            })
+        return batch, created
+
+    def confirm_compensation(self, actor: Actor, batch_id: int) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_confirm_batch(actor.role):
+            raise PermissionDenied("角色无权复核确认代偿批次")
+        batch, changed = self.repository.confirm_batch(batch_id, actor.user_id)
+        if changed:
+            self.audit.note(batch["record_id"], actor.user_id, "compensation_confirmed", {
+                "batch_no": batch["batch_no"],
+                "amount": batch["amount"],
+            })
+        return batch
+
+    def post_recovery(self, actor: Actor, batch_id: int, payload: Dict[str, Any]) -> Any:
+        """登记追偿回款；同一流水号重复提交按原回款返回。返回(回款, 是否新建)。"""
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_post_recovery(actor.role):
+            raise PermissionDenied("角色无权登记追偿回款")
+        data = self.rules.validate_recovery(payload or {})
+        recovery, created = self.repository.post_recovery(batch_id, data["flow_no"], float(data["amount"]), actor.user_id)
+        if created:
+            self.audit.note(recovery["record_id"], actor.user_id, "recovery_posted", {
+                "batch_no": recovery["batch_no"],
+                "flow_no": recovery["flow_no"],
+                "amount": recovery["amount"],
+                "applied": recovery["applied"],
+                "refunded": recovery["refunded"],
+                "remaining": recovery["remaining"],
+            })
+        return recovery, created
+
+    def get_compensation(self, actor: Actor, batch_id: int) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        batch = self.repository.get_batch(batch_id)
+        batch["recoveries"] = self.repository.list_recoveries(batch_id)
+        return batch
+
+    def list_compensations(self, actor: Actor, record_id: Optional[int] = None, limit: int = 200) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_batches(record_id=record_id, limit=limit)

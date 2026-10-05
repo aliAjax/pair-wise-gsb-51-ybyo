@@ -9,25 +9,63 @@
     main { max-width: 960px; margin: auto; }
     button { padding: .55rem .9rem; cursor: pointer; }
     pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border: 1px solid #d7dee6; padding: .4rem .6rem; text-align: left; font-size: .9rem; }
+    th { background: #eef2f6; }
   </style>
 </head>
 <body>
 <main>
   <h1>住房贷款纾困申请与履约跟踪</h1>
   <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
+  <div class="row">
+    <button id="load">加载记录</button>
+    <button id="stats">查看状态统计</button>
+    <button id="pools">查看年度额度</button>
+    <button id="batches">查看代偿批次</button>
+  </div>
+  <div id="table"></div>
   <pre id="output">点击上方按钮读取服务状态。</pre>
 </main>
 <script>
 const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
+const STATUS_LABELS = {"pre_occupied":"预占中","confirmed":"已确认","voided":"已作废"};
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+}
+function money(value) { return Number(value).toFixed(2); }
+async function fetchJson(path) {
   const response = await fetch(path, {headers});
-  const data = await response.json();
+  return response.json();
+}
+function showData(data) {
+  document.getElementById("table").innerHTML = "";
   document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+}
+async function show(path) { showData(await fetchJson(path)); }
+async function showBatches() {
+  const data = await fetchJson("/api/compensations");
+  const rows = data.items.map(item => "<tr>" +
+    "<td>" + esc(item.batch_no) + "</td>" +
+    "<td>" + esc(item.record_id) + "</td>" +
+    "<td>" + esc(item.agency_code) + " " + esc(item.agency_name) + "</td>" +
+    "<td>" + esc(item.year) + "</td>" +
+    "<td>" + money(item.amount) + "</td>" +
+    "<td>" + esc(STATUS_LABELS[item.status] || item.status) + "</td>" +
+    "<td>" + money(item.recovered) + "</td>" +
+    "<td>" + money(item.refunded) + "</td>" +
+    "<td>" + money(item.outstanding) + "</td>" +
+    "</tr>").join("");
+  document.getElementById("table").innerHTML =
+    "<table><thead><tr><th>批次号</th><th>记录</th><th>担保机构</th><th>年度</th><th>代偿金额</th><th>状态</th><th>已回款</th><th>超额退回</th><th>差额</th></tr></thead><tbody>" +
+    rows + "</tbody></table>";
+  document.getElementById("output").textContent = "共 " + data.items.length + " 个代偿批次。";
 }
 document.getElementById("load").onclick = () => show("/api/records?limit=20");
 document.getElementById("stats").onclick = () => show("/api/stats");
+document.getElementById("pools").onclick = () => show("/api/quota-pools");
+document.getElementById("batches").onclick = showBatches;
 </script>
 </body>
 </html>

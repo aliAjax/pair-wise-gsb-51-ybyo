@@ -9,12 +9,19 @@ CREATE_ROLES = {'intake_officer'}
 ACTION_ROLES = {'assess': {'intake_officer'}, 'approve': {'underwriter'}, 'activate': {'servicer'}, 'cure': {'servicer'}, 'default': {'servicer'}}
 TRANSITIONS = {'assess': {'submitted': 'assessed'}, 'approve': {'assessed': 'approved'}, 'activate': {'approved': 'active'}, 'cure': {'active': 'cured'}, 'default': {'active': 'defaulted'}}
 
+# 担保代偿：多家担保机构共用年度额度，批次先预占、复核确认后生效
+BATCH_SUBMIT_ROLES = {'guarantee_officer'}
+BATCH_CONFIRM_ROLES = {'underwriter'}
+RECOVERY_POST_ROLES = {'guarantee_officer'}
+COMPENSATION_ALLOWED_STATES = {'active', 'defaulted'}
+TERMINAL_ACTIONS = {'cure', 'default'}
+
 
 class DomainRules:
     INITIAL_STATE = INITIAL_STATE
 
     def known_role(self, role: str) -> bool:
-        all_roles = set(CREATE_ROLES)
+        all_roles = set(CREATE_ROLES) | BATCH_SUBMIT_ROLES | BATCH_CONFIRM_ROLES | RECOVERY_POST_ROLES
         for roles in ACTION_ROLES.values():
             all_roles.update(roles)
         return role == "admin" or role in all_roles
@@ -24,6 +31,18 @@ class DomainRules:
 
     def role_can_action(self, role: str, action: str) -> bool:
         return role == "admin" or role in ACTION_ROLES.get(action, set())
+
+    def role_can_administer(self, role: str) -> bool:
+        return role == "admin"
+
+    def role_can_submit_batch(self, role: str) -> bool:
+        return role == "admin" or role in BATCH_SUBMIT_ROLES
+
+    def role_can_confirm_batch(self, role: str) -> bool:
+        return role == "admin" or role in BATCH_CONFIRM_ROLES
+
+    def role_can_post_recovery(self, role: str) -> bool:
+        return role == "admin" or role in RECOVERY_POST_ROLES
 
     def validate_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         p = dict(payload)
@@ -102,3 +121,39 @@ class DomainRules:
             summary = "纾困方案违约"
         p.update(changes)
         return new_state, p, summary or ("已执行%s" % action)
+
+    def validate_pool(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        p = dict(payload)
+        integer(p, "year", 2000, 2100)
+        number(p, "total_amount", 0.01)
+        return p
+
+    def validate_agency(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        p = dict(payload)
+        text(p, "code")
+        text(p, "name")
+        return p
+
+    def validate_batch(self, payload: Dict[str, Any], default_year: int) -> Dict[str, Any]:
+        p = dict(payload)
+        text(p, "batch_no")
+        text(p, "agency_code")
+        number(p, "amount", 0.01)
+        if p.get("year") is None:
+            p["year"] = int(default_year)
+        else:
+            integer(p, "year", 2000, 2100)
+        return p
+
+    def validate_recovery(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        p = dict(payload)
+        text(p, "flow_no")
+        number(p, "amount", 0.01)
+        return p
+
+    def check_record_accepts_compensation(self, record: Dict[str, Any]) -> None:
+        if record["state"] not in COMPENSATION_ALLOWED_STATES:
+            raise Conflict("当前状态不能提交代偿批次")
+
+    def voids_pending_batches(self, action: str) -> bool:
+        return action in TERMINAL_ACTIONS

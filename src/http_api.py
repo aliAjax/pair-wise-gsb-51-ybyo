@@ -12,6 +12,10 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+RECORD_COMPENSATIONS_RE = re.compile(r"^/api/records/(\d+)/compensations$")
+COMPENSATION_RE = re.compile(r"^/api/compensations/(\d+)$")
+CONFIRM_RE = re.compile(r"^/api/compensations/(\d+)/confirm$")
+RECOVERIES_RE = re.compile(r"^/api/compensations/(\d+)/recoveries$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -76,6 +80,23 @@ def make_handler(service: Any, static_dir: Path):
                     records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
                     self._send(200, {"items": records})
                     return
+                if parsed.path == "/api/quota-pools":
+                    self._send(200, {"items": service.list_quota_pools(self._actor())})
+                    return
+                if parsed.path == "/api/agencies":
+                    self._send(200, {"items": service.list_agencies(self._actor())})
+                    return
+                if parsed.path == "/api/compensations":
+                    self._send(200, {"items": service.list_compensations(self._actor())})
+                    return
+                match = RECORD_COMPENSATIONS_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.list_compensations(self._actor(), record_id=int(match.group(1)))})
+                    return
+                match = COMPENSATION_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_compensation(self._actor(), int(match.group(1))))
+                    return
                 match = RECORD_RE.match(parsed.path)
                 if match:
                     self._send(200, service.get_record(self._actor(), int(match.group(1))))
@@ -98,6 +119,26 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/quota-pools":
+                    self._send(201, service.create_quota_pool(self._actor(), body))
+                    return
+                if parsed.path == "/api/agencies":
+                    self._send(201, service.create_agency(self._actor(), body))
+                    return
+                match = RECORD_COMPENSATIONS_RE.match(parsed.path)
+                if match:
+                    batch, created = service.submit_compensation(self._actor(), int(match.group(1)), body)
+                    self._send(201 if created else 200, batch)
+                    return
+                match = CONFIRM_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.confirm_compensation(self._actor(), int(match.group(1))))
+                    return
+                match = RECOVERIES_RE.match(parsed.path)
+                if match:
+                    recovery, created = service.post_recovery(self._actor(), int(match.group(1)), body)
+                    self._send(201 if created else 200, recovery)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:
