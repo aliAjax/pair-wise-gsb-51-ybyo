@@ -12,6 +12,19 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+BATCH_RE = re.compile(r"^/api/batches/(\d+)$")
+BATCH_RECOVERIES_RE = re.compile(r"^/api/batches/(\d+)/recoveries$")
+BATCH_REVIEW_RE = re.compile(r"^/api/batches/(\d+)/review$")
+
+
+def _query_int(query: dict, key: str):
+    raw = query.get(key, [None])[0]
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValidationError("%s必须是整数" % key) from exc
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -85,7 +98,44 @@ def make_handler(service: Any, static_dir: Path):
                     self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
                     return
                 if parsed.path == "/api/stats":
-                    self._send(200, service.stats(self._actor()))
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"records": service.stats(self._actor()),
+                                     "guarantees": service.guarantee_stats(self._actor(), _query_int(query, "year"))})
+                    return
+                if parsed.path == "/api/guarantors":
+                    self._send(200, {"items": service.list_guarantors(self._actor())})
+                    return
+                if parsed.path == "/api/quotas":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.quota_overview(self._actor(), _query_int(query, "year"))})
+                    return
+                if parsed.path == "/api/batches":
+                    query = parse_qs(parsed.query)
+                    items = service.list_batches(
+                        self._actor(),
+                        status=query.get("status", [None])[0],
+                        guarantor_code=query.get("guarantor_code", [None])[0],
+                        year=_query_int(query, "year"),
+                        record_id=_query_int(query, "record_id"),
+                        limit=int(query.get("limit", ["100"])[0]),
+                    )
+                    self._send(200, {"items": items})
+                    return
+                match = BATCH_RECOVERIES_RE.match(parsed.path)
+                if match:
+                    query = parse_qs(parsed.query)
+                    items = service.list_recoveries(self._actor(), int(match.group(1)),
+                                                    int(query.get("limit", ["100"])[0]))
+                    self._send(200, {"items": items})
+                    return
+                match = BATCH_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_batch(self._actor(), int(match.group(1))))
+                    return
+                if parsed.path == "/api/recoveries":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.list_recoveries(
+                        self._actor(), _query_int(query, "batch_id"), int(query.get("limit", ["100"])[0]))})
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
@@ -98,6 +148,28 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/guarantors":
+                    self._send(201, service.create_guarantor(self._actor(), body.get("data", {})))
+                    return
+                if parsed.path == "/api/quotas":
+                    self._send(200, service.configure_quota(self._actor(), body.get("data", {})))
+                    return
+                if parsed.path == "/api/batches":
+                    self._send(201, service.submit_compensation(self._actor(), body.get("data", {})))
+                    return
+                match = BATCH_REVIEW_RE.match(parsed.path)
+                if match:
+                    data = body.get("data", {})
+                    approved = data.get("approved", False)
+                    if not isinstance(approved, bool):
+                        raise ValidationError("approved必须是布尔值")
+                    self._send(200, service.review_batch(self._actor(), int(match.group(1)), approved, data))
+                    return
+                match = BATCH_RECOVERIES_RE.match(parsed.path)
+                if match:
+                    self._send(201, service.register_recovery(
+                        self._actor(), int(match.group(1)), body.get("data", {})))
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

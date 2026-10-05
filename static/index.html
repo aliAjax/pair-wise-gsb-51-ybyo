@@ -3,31 +3,223 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>住房贷款纾困申请与履约跟踪</title>
+  <title>住房贷款纾困与代偿额度管理</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
-    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; margin: 1.5rem; color: #17212b; background: #f7f8fa; }
+    main { max-width: 1180px; margin: auto; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.05rem; margin-top: 1.6rem; border-left: 4px solid #2f6fed; padding-left: .5rem; }
+    .bar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; background: #fff; padding: .9rem; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    label { display: flex; flex-direction: column; font-size: .78rem; color: #55606b; gap: .25rem; }
+    input, select { padding: .42rem .5rem; border: 1px solid #c9d1da; border-radius: 6px; min-width: 9rem; font-size: .88rem; }
+    button { padding: .48rem .85rem; cursor: pointer; border: 0; border-radius: 6px; background: #2f6fed; color: #fff; font-size: .86rem; }
+    button.ghost { background: #e8edf4; color: #27313c; }
+    button.warn { background: #d9574f; }
+    button.ok { background: #2e9e6b; }
+    table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.06); font-size: .84rem; }
+    th, td { padding: .5rem .6rem; border-bottom: 1px solid #eef1f4; text-align: right; white-space: nowrap; }
+    th { background: #eef2f8; color: #3c4650; }
+    th:first-child, td:first-child, td.lft { text-align: left; }
+    .tag { padding: .1rem .45rem; border-radius: 99px; font-size: .74rem; }
+    .pending { background: #fff3d6; color: #8a6116; }
+    .confirmed { background: #dcf3e7; color: #1d7046; }
+    .rejected, .voided { background: #f7dcd9; color: #97362e; }
+    .cards { display: flex; gap: .8rem; flex-wrap: wrap; }
+    .card { background: #fff; border-radius: 10px; padding: .8rem 1rem; min-width: 150px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .card b { display: block; font-size: 1.25rem; margin-top: .25rem; }
+    .muted { color: #7a8590; font-size: .78rem; }
+    pre { background: #1f2733; color: #dce3ec; padding: .9rem; border-radius: 8px; overflow: auto; font-size: .78rem; max-height: 320px; }
+    .okmsg { color: #2e9e6b; } .errmsg { color: #d9574f; }
   </style>
 </head>
 <body>
 <main>
-  <h1>住房贷款纾困申请与履约跟踪</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+  <h1>住房贷款纾困与代偿额度管理</h1>
+  <p class="muted">几家担保机构共用年度代偿额度：提交即预占，复核确认才有效；同一流水匹配一笔回款，不足留差额、超额退回；方案失效后未确认批次作废重算。</p>
+
+  <div class="bar">
+    <label>用户 <input id="user" value="demo-admin"></label>
+    <label>角色
+      <select id="role">
+        <option value="admin">admin（全部权限）</option>
+        <option value="guarantee_admin">guarantee_admin（额度管理员）</option>
+        <option value="guarantor_officer">guarantor_officer（担保经办）</option>
+        <option value="guarantor_reviewer">guarantor_reviewer（复核员）</option>
+        <option value="servicer">servicer（纾困服务方）</option>
+      </select>
+    </label>
+    <label>机构 <input id="org" value="demo"></label>
+    <label>年度 <input id="year" type="number" value="2026"></label>
+    <button onclick="loadAll()">刷新全部</button>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <h2>① 担保机构登记</h2>
+  <div class="bar">
+    <label>机构编码 <input id="g_code" placeholder="G01"></label>
+    <label>机构名称 <input id="g_name" placeholder="市融资担保公司"></label>
+    <button onclick="createGuarantor()">登记机构</button>
+  </div>
+
+  <h2>② 年度共享额度池</h2>
+  <div class="bar">
+    <label>额度总额 <input id="q_total" type="number" value="1000000"></label>
+    <button onclick="configureQuota()">配置/调整额度</button>
+  </div>
+  <div id="quotaCards" class="cards" style="margin-top:.8rem"></div>
+
+  <h2>③ 代偿批次（提交=预占，复核确认才有效）</h2>
+  <div class="bar">
+    <label>批次号 <input id="b_no" placeholder="B2026-001"></label>
+    <label>担保机构编码 <input id="b_guarantor" placeholder="G01"></label>
+    <label>代偿金额 <input id="b_amount" type="number" value="300000"></label>
+    <label>关联纾困记录ID(可选) <input id="b_record" type="number"></label>
+    <label>备注 <input id="b_note"></label>
+    <button onclick="submitBatch()">提交代偿（预占）</button>
+  </div>
+  <table style="margin-top:.8rem">
+    <thead><tr>
+      <th>ID</th><th>批次号</th><th>机构</th><th>状态</th><th>代偿金额</th>
+      <th>已追偿</th><th>剩余差额</th><th>关联记录</th><th>操作</th>
+    </tr></thead>
+    <tbody id="batchRows"><tr><td colspan="9" class="lft muted">点击“刷新全部”加载。</td></tr></tbody>
+  </table>
+
+  <h2>④ 追偿回款（同流水唯一，超额退回）</h2>
+  <div class="bar">
+    <label>批次ID <input id="r_batch" type="number" placeholder="1"></label>
+    <label>银行流水号 <input id="r_serial" placeholder="TX-20260101-001"></label>
+    <label>到账金额 <input id="r_amount" type="number" value="100000"></label>
+    <button onclick="registerRecovery()">登记回款</button>
+  </div>
+  <table style="margin-top:.8rem">
+    <thead><tr>
+      <th>ID</th><th>流水号</th><th>批次</th><th>到账金额</th>
+      <th>实际冲减</th><th>超额退回</th><th>冲减后剩余</th>
+    </tr></thead>
+    <tbody id="recoveryRows"><tr><td colspan="7" class="lft muted">点击“刷新全部”加载。</td></tr></tbody>
+  </table>
+
+  <h2>⑤ 纾困方案失效联动（default → 待确认批次作废）</h2>
+  <div class="bar">
+    <label>记录ID <input id="d_record" type="number"></label>
+    <label>expected_version <input id="d_version" type="number" value="1"></label>
+    <label>失效原因 <input id="d_reason" value="借款人再次违约"></label>
+    <button class="warn" onclick="markDefault()">标记方案失效</button>
+  </div>
+
+  <h2>⑥ 统计</h2>
+  <div id="stats" class="cards"></div>
+
+  <h2>原始响应（调试）</h2>
+  <pre id="output">操作后此处显示原始 JSON。</pre>
 </main>
 <script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+const $ = id => document.getElementById(id);
+function headers() {
+  return {"X-User-Id": $("user").value || "demo", "X-Role": $("role").value, "X-Org": $("org").value,
+          "Content-Type": "application/json"};
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+function money(v) { return "¥" + Number(v || 0).toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+function say(text, ok) { const el = $("msg"); el.textContent = text; el.className = ok ? "okmsg" : "errmsg"; setTimeout(() => { el.textContent = ""; el.className = "muted"; }, 5000); }
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+  $("output").textContent = JSON.stringify(data, null, 2);
+  if (!response.ok) { say("失败：" + (data.message || response.status), false); throw new Error(data.message); }
+  return data;
+}
+function post(path, data) { return api(path, {method: "POST", headers: headers(), body: JSON.stringify({data})}); }
+
+async function createGuarantor() {
+  await post("/api/guarantors", {code: $("g_code").value.trim(), name: $("g_name").value.trim()});
+  say("担保机构已登记", true); loadAll();
+}
+async function configureQuota() {
+  await post("/api/quotas", {year: Number($("year").value), total_quota: Number($("q_total").value)});
+  say("年度额度已配置", true); loadAll();
+}
+async function submitBatch() {
+  const body = {batch_no: $("b_no").value.trim(), guarantor_code: $("b_guarantor").value.trim(),
+                amount: Number($("b_amount").value), year: Number($("year").value), note: $("b_note").value};
+  const rid = $("b_record").value; if (rid) body.record_id = Number(rid);
+  const data = await api("/api/batches", {method: "POST", headers: headers(), body: JSON.stringify({data: body})});
+  say(data.idempotent_hit ? "该批次已存在，按原批次返回，未重复占用额度" : "代偿已提交，额度已预占（待复核）", true);
+  loadAll();
+}
+async function reviewBatch(id, approved) {
+  const data = await api(`/api/batches/${id}/review`, {method: "POST", headers: headers(),
+      body: JSON.stringify({data: {approved, review_note: approved ? "复核通过" : "复核驳回"}})});
+  say(approved ? "批次已确认，占用正式生效" : "批次已驳回，预占已释放", true);
+  loadAll();
+}
+async function registerRecovery() {
+  const bid = Number($("r_batch").value);
+  const data = await post(`/api/batches/${bid}/recoveries`,
+      {serial_no: $("r_serial").value.trim(), amount: Number($("r_amount").value)});
+  let msg;
+  if (data.idempotent_hit) msg = "该流水已登记，返回原记录，未重复冲减";
+  else if (data.refunded_amount > 0) msg = `回款超额，退回${money(data.refunded_amount)}，批次剩余差额${money(data.remaining_after)}`;
+  else if (data.remaining_after === 0) msg = "回款正好结清批次";
+  else msg = `回款部分冲减，剩余差额${money(data.remaining_after)}`;
+  say(msg, true); loadAll();
+}
+async function markDefault() {
+  await api(`/api/records/${Number($("d_record").value)}/actions/default`,
+      {method: "POST", headers: headers(),
+       body: JSON.stringify({expected_version: Number($("d_version").value), data: {default_reason: $("d_reason").value}})});
+  say("方案已失效，未确认代偿批次作废并释放预占", true); loadAll();
+}
+
+function quotaCard(q) {
+  return `<div class="card"><span class="muted">${q.year} 年度额度</span><b>${money(q.total_quota)}</b>
+    <div class="muted" style="margin-top:.4rem">待复核预占 ${money(q.pending_amount)}（${q.pending_batches}笔）<br>
+    已确认占用 ${money(q.confirmed_amount)}（${q.confirmed_batches}笔）<br>
+    剩余可用 <b style="display:inline;color:#2f6fed">${money(q.available_amount)}</b></div></div>`;
+}
+function statusTag(s) {
+  const map = {pending: "待复核", confirmed: "已确认", rejected: "已驳回", voided: "已作废"};
+  return `<span class="tag ${s}">${map[s] || s}</span>`;
+}
+async function loadAll() {
+  const year = Number($("year").value);
+  const [quotas, batches, recoveries, stats] = await Promise.all([
+    api(`/api/quotas?year=${year}`),
+    api(`/api/batches?year=${year}&limit=100`),
+    api("/api/recoveries?limit=100"),
+    api(`/api/stats?year=${year}`),
+  ]);
+  $("quotaCards").innerHTML = quotas.items.length ? quotas.items.map(quotaCard).join("")
+      : `<span class="muted">${year}年度额度池尚未配置。</span>`;
+  $("batchRows").innerHTML = batches.items.length ? batches.items.map(b => `<tr>
+      <td>${b.id}</td><td class="lft">${b.batch_no}</td><td>${b.guarantor_code}</td>
+      <td>${statusTag(b.status)}</td><td>${money(b.amount)}</td>
+      <td>${money(b.recovered_amount)}</td><td>${money(b.outstanding_amount)}</td>
+      <td>${b.record_id == null ? "—" : b.record_id}</td>
+      <td>${b.status === "pending"
+          ? `<button class="ok" onclick="reviewBatch(${b.id},true)">确认</button>
+             <button class="warn" onclick="reviewBatch(${b.id},false)">驳回</button>`
+          : "—"}</td></tr>`).join("")
+      : `<tr><td colspan="9" class="lft muted">暂无批次。</td></tr>`;
+  $("recoveryRows").innerHTML = recoveries.items.length ? recoveries.items.map(r => `<tr>
+      <td>${r.id}</td><td class="lft">${r.serial_no}</td><td>#${r.batch_id}</td>
+      <td>${money(r.amount)}</td><td>${money(r.applied_amount)}</td>
+      <td>${r.refunded_amount > 0 ? money(r.refunded_amount) : "—"}</td>
+      <td>${money(r.remaining_after)}</td></tr>`).join("")
+      : `<tr><td colspan="7" class="lft muted">暂无回款。</td></tr>`;
+  const g = stats.guarantees;
+  $("stats").innerHTML = `
+    <div class="card"><span class="muted">年度总额度</span><b>${money(g.total_quota)}</b></div>
+    <div class="card"><span class="muted">已占用（待复核+已确认）</span><b>${money(g.occupied_amount)}</b></div>
+    <div class="card"><span class="muted">剩余可用</span><b>${money(g.available_amount)}</b></div>
+    <div class="card"><span class="muted">已追偿冲减</span><b>${money(g.recoveries.applied_amount)}</b>
+      <div class="muted">${g.recoveries.count}笔，超额退回${money(g.recoveries.refunded_amount)}</div></div>
+    <div class="card" style="flex:1;min-width:260px"><span class="muted">各机构占用与差额</span>
+      <table style="box-shadow:none;margin-top:.3rem"><thead><tr><th>机构</th><th>笔数</th><th>占用</th><th>已追偿</th><th>剩余差额</th></tr></thead>
+      <tbody>${g.by_guarantor.length ? g.by_guarantor.map(x => `<tr><td class="lft">${x.guarantor_code}</td><td>${x.batches}</td>
+        <td>${money(x.occupied_amount)}</td><td>${money(x.recovered_amount)}</td><td>${money(x.outstanding_amount)}</td></tr>`).join("")
+        : `<tr><td colspan="5" class="muted lft">暂无</td></tr>`}</tbody></table></div>`;
+}
 </script>
 </body>
 </html>
